@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta charset="utf-8" />
+        <title>今日抽烟</title>
+    </head>
+    <body>
+        <script>
+            // 全局WebSocket实例
+            let websocket
+
+            // 全局配置
+            const CONFIG = {
+                TOKEN: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiIyOTY3NzgiLCJpYXQiOjE3Mjg3MDI4MDksImV4cCI6MTc1NDYyMjgwOSwibmJmIjoxNzI4NzAyODA5LCJzdWIiOiJzbW9rZS5pY2FyLnJlbiIsImp0aSI6ImQ1ZDM1NzgzM2NmZTM3NzYyMmM4ZmU0OWQ5ZTc3YWRjIn0.USKBtb-tFD_P0laDQ2ICawF4SlVWW44k94t5mMS32zw',
+                UPDATE_INTERVAL: 5 * 60 * 1000, // 5分钟
+                API: {
+                    GET_DATA: 'https://smk.xiao51.com/index.php?a=user_v5',
+                    ADD_SMOKE:
+                        'https://smk.xiao51.com/index.php?a=smoke_add_v6',
+                },
+            }
+
+            // 全局状态管理
+            const state = {
+                context: null,
+                smokeCount: 0,
+                lastSmokeTime: 0,
+                updateTimer: null, // 数据同步定时器
+                timeUpdateTimer: null, // 时间更新定时器
+                fastUpdateTimer: null, // 快速更新定时器（首分钟使用）
+                isRequesting: false,
+                lastRenderTime: 0, // 上次渲染的时间，用于判断是否需要更新
+            }
+
+            // 发送事件到Stream Dock
+            function setImage(context, image) {
+                if (!websocket) {
+                    console.error('WebSocket未连接')
+                    return
+                }
+                websocket.send(
+                    JSON.stringify({
+                        event: 'setImage',
+                        context: context,
+                        payload: {
+                            image: image,
+                            target: 0,
+                        },
+                    })
+                )
+            }
+
+            // Canvas绘制器
+            class CanvasRenderer {
+                constructor() {
+                    this.canvas = document.createElement('canvas')
+                    this.canvas.width = 144
+                    this.canvas.height = 144
+                    this.ctx = this.canvas.getContext('2d')
+                }
+
+                // 渲染常规显示
+                render(smokeCount, lastSmokeTime) {
+                    // 清空并填充背景
+                    this.ctx.fillStyle = '#333333'
+                    this.ctx.fillRect(0, 0, 144, 144)
+
+                    // 设置文本属性
+                    this.ctx.fillStyle = 'white'
+                    this.ctx.textAlign = 'center'
+
+                    // 绘制抽烟数量
+                    this.ctx.font = 'bold 35px Arial'
+                    this.ctx.fillText(`${smokeCount}支`, 72, 60)
+
+                    // 绘制上次时间
+                    this.ctx.font = '21px Arial'
+                    this.ctx.fillText(
+                        this.formatLastTime(lastSmokeTime),
+                        72,
+                        100
+                    )
+
+                    return this.canvas.toDataURL()
+                }
+
+                // 渲染加载状态
+                renderLoading() {
+                    this.clearCanvas()
+                    this.ctx.font = 'bold 24px Arial'
+                    this.ctx.fillStyle = 'white'
+                    this.ctx.textAlign = 'center'
+                    this.ctx.fillText('请求中...', 72, 72)
+                    return this.canvas.toDataURL()
+                }
+
+                // 渲染错误状态
+                renderError(message) {
+                    this.clearCanvas()
+                    this.ctx.font = 'bold 24px Arial'
+                    this.ctx.fillStyle = '#ff4444'
+                    this.ctx.textAlign = 'center'
+                    this.ctx.fillText(message || '请求失败', 72, 72)
+                    return this.canvas.toDataURL()
+                }
+
+                // 清空画布
+                clearCanvas() {
+                    this.ctx.fillStyle = '#333333'
+                    this.ctx.fillRect(0, 0, 144, 144)
+                }
+
+                // 格式化时间显示
+                formatLastTime(timestamp) {
+                    if (!timestamp) return '暂无记录'
+
+                    const now = Math.floor(Date.now() / 1000)
+                    const diff = now - timestamp
+
+                    if (diff < 60) {
+                        return `${diff}秒前`
+                    }
+                    if (diff >= 24 * 60 * 60) {
+                        return `${Math.floor(diff / (24 * 60 * 60))}天前`
+                    }
+                    if (diff >= 60 * 60) {
+                        return `${Math.floor(diff / (60 * 60))}小时前`
+                    }
+                    return `${Math.floor(diff / 60)}分钟前`
+                }
+            }
+
+            // API请求工具
+            class ApiClient {
+                constructor(token) {
+                    this.token = token
+                }
+
+                async fetchData() {
+                    try {
+                        const response = await fetch(CONFIG.API.GET_DATA, {
+                            headers: { token: this.token },
+                        })
+
+                        if (!response.ok) {
+                            throw new Error(`HTTP错误: ${response.status}`)
+                        }
+
+                        const data = await response.json()
+                        if (data.code !== '0') {
+                            throw new Error(data.message || '请求失败')
+                        }
+
+                        // 提取number中的数字
+                        const numberMatch =
+                            data.data.today[0].number.match(/\d+/)
+                        const smokeCount = numberMatch
+                            ? parseInt(numberMatch[0])
+                            : 0
+
+                        return {
+                            smokeCount,
+                            lastSmokeTime: parseInt(data.data.currentTime),
+                        }
+                    } catch (error) {
+                        console.error('获取数据失败:', error)
+                        throw error
+                    }
+                }
+
+                async addSmoke() {
+                    try {
+                        const response = await fetch(CONFIG.API.ADD_SMOKE, {
+                            method: 'POST',
+                            headers: { token: this.token },
+                        })
+
+                        if (!response.ok) {
+                            throw new Error(`HTTP错误: ${response.status}`)
+                        }
+
+                        const data = await response.json()
+                        if (data.code !== '0') {
+                            throw new Error(data.message || '添加失败')
+                        }
+
+                        // 提取number中的数字
+                        const numberMatch =
+                            data.data.today[0].number.match(/\d+/)
+                        const smokeCount = numberMatch
+                            ? parseInt(numberMatch[0])
+                            : 0
+
+                        return {
+                            smokeCount,
+                            lastSmokeTime: parseInt(data.data.currentTime),
+                        }
+                    } catch (error) {
+                        console.error('添加记录失败:', error)
+                        throw error
+                    }
+                }
+            }
+
+            // 插件主控制器
+            class SmokePlugin {
+                constructor() {
+                    this.renderer = new CanvasRenderer()
+                    this.apiClient = new ApiClient(CONFIG.TOKEN)
+                }
+
+                // 初始化插件
+                async init(context) {
+                    console.log('插件初始化')
+                    state.context = context
+
+                    // 立即获取并显示数据
+                    await this.updateData()
+
+                    // 启动定时更新
+                    this.startUpdateTimer()
+                }
+
+                // 启动所有定时器
+                startAllTimers() {
+                    // 清理现有定时器
+                    this.cleanup()
+
+                    // 启动数据同步定时器 (5分钟)
+                    this.startUpdateTimer()
+
+                    // 启动时间更新定时器
+                    this.startTimeUpdateTimer()
+                }
+
+                // 开始数据同步定时器
+                startUpdateTimer() {
+                    if (state.updateTimer) clearInterval(state.updateTimer)
+                    state.updateTimer = setInterval(
+                        () => this.updateData(),
+                        CONFIG.UPDATE_INTERVAL
+                    )
+                }
+
+                // 开始时间更新定时器
+                startTimeUpdateTimer() {
+                    // 清理现有定时器
+                    if (state.timeUpdateTimer)
+                        clearInterval(state.timeUpdateTimer)
+                    if (state.fastUpdateTimer)
+                        clearInterval(state.fastUpdateTimer)
+
+                    // 计算当前时间差
+                    const now = Math.floor(Date.now() / 1000)
+                    const diff = now - state.lastSmokeTime
+
+                    if (diff < 60) {
+                        // 在第一分钟内，每秒更新一次
+                        state.fastUpdateTimer = setInterval(
+                            () => this.updateDisplay(),
+                            1000
+                        )
+
+                        // 设置一个定时器，在到达1分钟时切换到每分钟更新
+                        setTimeout(() => {
+                            clearInterval(state.fastUpdateTimer)
+                            state.fastUpdateTimer = null
+                            this.startRegularTimeUpdate()
+                        }, (60 - diff) * 1000)
+                    } else {
+                        // 直接启动每分钟更新
+                        this.startRegularTimeUpdate()
+                    }
+                }
+
+                // 更新数据
+                async updateData() {
+                    try {
+                        const data = await this.apiClient.fetchData()
+                        state.smokeCount = data.smokeCount
+                        state.lastSmokeTime = data.lastSmokeTime
+
+                        const imageBase64 = this.renderer.render(
+                            state.smokeCount,
+                            state.lastSmokeTime
+                        )
+                        setImage(state.context, imageBase64)
+                    } catch (error) {
+                        console.error('更新数据失败:', error)
+                        const errorImage = this.renderer.renderError('获取失败')
+                        setImage(state.context, errorImage)
+                    }
+                }
+
+                // 开始常规时间更新（每分钟）
+                startRegularTimeUpdate() {
+                    state.timeUpdateTimer = setInterval(
+                        () => this.updateDisplay(),
+                        60 * 1000
+                    )
+                }
+
+                // 更新显示
+                async updateDisplay() {
+                    const imageBase64 = this.renderer.render(
+                        state.smokeCount,
+                        state.lastSmokeTime
+                    )
+                    setImage(state.context, imageBase64)
+                }
+
+                // 更新数据
+                async updateData() {
+                    try {
+                        const data = await this.apiClient.fetchData()
+                        state.smokeCount = data.smokeCount
+
+                        // 如果最后吸烟时间发生变化，重新启动时间更新定时器
+                        if (state.lastSmokeTime !== data.lastSmokeTime) {
+                            state.lastSmokeTime = data.lastSmokeTime
+                            this.startTimeUpdateTimer()
+                        }
+
+                        await this.updateDisplay()
+                    } catch (error) {
+                        console.error('更新数据失败:', error)
+                        const errorImage = this.renderer.renderError('获取失败')
+                        setImage(state.context, errorImage)
+                    }
+                }
+
+                // 处理按键事件
+                async handleKeyPress() {
+                    if (state.isRequesting) {
+                        console.log('正在请求中，忽略按键')
+                        return
+                    }
+
+                    try {
+                        // 设置请求状态
+                        state.isRequesting = true
+
+                        // 显示加载状态
+                        const loadingImage = this.renderer.renderLoading()
+                        setImage(state.context, loadingImage)
+
+                        // 发送请求
+                        const data = await this.apiClient.addSmoke()
+
+                        // 更新状态
+                        state.smokeCount = data.smokeCount
+                        state.lastSmokeTime = data.lastSmokeTime
+
+                        // 重启时间更新定时器
+                        this.startTimeUpdateTimer()
+
+                        // 更新显示
+                        await this.updateDisplay()
+                    } catch (error) {
+                        console.error('添加记录失败:', error)
+                        const errorImage = this.renderer.renderError('添加失败')
+                        setImage(state.context, errorImage)
+                    } finally {
+                        // 请求完成后重置状态
+                        state.isRequesting = false
+                    }
+                }
+
+                // 清理插件
+                cleanup() {
+                    // 清理所有定时器
+                    if (state.updateTimer) {
+                        clearInterval(state.updateTimer)
+                        state.updateTimer = null
+                    }
+                    if (state.timeUpdateTimer) {
+                        clearInterval(state.timeUpdateTimer)
+                        state.timeUpdateTimer = null
+                    }
+                    if (state.fastUpdateTimer) {
+                        clearInterval(state.fastUpdateTimer)
+                        state.fastUpdateTimer = null
+                    }
+                }
+            }
+
+            // 插件实例
+            const plugin = new SmokePlugin()
+
+            // StreamDock连接回调
+            function connectElgatoStreamDeckSocket(port, uuid, event, info) {
+                console.log('开始连接WebSocket')
+                websocket = new WebSocket('ws://127.0.0.1:' + port)
+
+                websocket.onopen = () => {
+                    console.log('WebSocket已连接')
+                    websocket.send(
+                        JSON.stringify({
+                            event: event,
+                            uuid: uuid,
+                        })
+                    )
+                }
+
+                websocket.onmessage = async (message) => {
+                    const data = JSON.parse(message.data)
+                    console.log('收到消息:', data.event)
+
+                    switch (data.event) {
+                        case 'keyDown':
+                            await plugin.handleKeyPress()
+                            break
+                        case 'willAppear':
+                            await plugin.init(data.context)
+                            break
+                        case 'willDisappear':
+                            plugin.cleanup()
+                            break
+                    }
+                }
+
+                websocket.onerror = (error) => {
+                    console.error('WebSocket错误:', error)
+                }
+
+                websocket.onclose = () => {
+                    console.log('WebSocket已关闭')
+                }
+            }
+        </script>
+    </body>
+</html>

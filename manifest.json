@@ -1,44 +1,33 @@
 {
     "Actions": [
       {
-        "Icon": "static/icon",
+        "UUID": "com.example.streamdock.imageswitch",
+        "Icon": "images/bg.png",
         "Name": "今日抽烟",
+        "Tooltip": "点击切换图片，第三次后自动切换",
         "States": [
           {
-            "FontSize": "12",
-            "TitleAlignment": "center",
-            "Image": "static/icon"
+            "Image": "images/bg.png"
           }
         ],
-        "Controllers": [
-          "Keypad",
-          "Information"
-        ],
-        "UserTitleEnabled": false,
-        "SupportedInMultiActions": false,
-        "Tooltip": "记录今日抽烟情况",
-        "UUID": "com.fangao.streamdock.todaysmoke.sdPlugin",
-        "PropertyInspectorPath": "propertyInspector/action1/index.html"
+        "PropertyInspectorPath": "index.html"
       }
     ],
     "SDKVersion": 1,
-    "Author": "YourName",
-    "Name": "今日抽烟",
-    "Icon": "static/icon",
-    "CodePath": "plugin/index.html",
-    "Description": "记录和显示每日抽烟情况",
-    "Category": "生活习惯",
-    "CategoryIcon": "static/icon",
+    "Author": "Your Name",
+    "CodePath": "index.html",
+    "Description": "今日抽烟插件",
+    "Name": "今日抽烟插件",
+    "URL": "https://www.example.com",
     "Version": "1.0",
-    "URL": "https://your-website.com/",
     "OS": [
-      {
-        "Platform": "mac",
-        "MinimumVersion": "10.11"
-      },
       {
         "Platform": "windows",
         "MinimumVersion": "7"
+      },
+      {
+        "Platform": "mac",
+        "MinimumVersion": "10.11"
       }
     ],
     "Software": {
